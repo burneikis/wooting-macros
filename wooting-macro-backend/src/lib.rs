@@ -569,7 +569,42 @@ impl MacroBackend {
                             Some(event)
                         }
                         rdev::EventType::MouseMove { .. } => Some(event),
-                        rdev::EventType::Wheel { .. } => Some(event),
+                        rdev::EventType::Wheel { delta_y, .. } => {
+                            debug!("Mouse wheel: delta_y={:?}", delta_y);
+
+                            // Determine if it's scroll up or down
+                            let scroll_button = if delta_y > 0 {
+                                mouse::MouseButton::ScrollUp
+                            } else {
+                                mouse::MouseButton::ScrollDown
+                            };
+
+                            let converted_button_to_u32: u32 = (&scroll_button).into();
+
+                            let trigger_list = inner_triggers.blocking_read().clone();
+
+                            let check_these_macros =
+                                match trigger_list.get(&converted_button_to_u32) {
+                                    None => {
+                                        vec![]
+                                    }
+                                    Some(data_found) => data_found.to_vec(),
+                                };
+
+                            let channel_clone = schan_execute.clone();
+
+                            let should_grab = check_macro_execution_efficiently(
+                                vec![converted_button_to_u32],
+                                check_these_macros,
+                                channel_clone,
+                            );
+
+                            // Scroll wheel events can be consumed since they don't interfere with basic PC control
+                            match should_grab {
+                                true => None,
+                                false => Some(event),
+                            }
+                        }
                     }
                 } else {
                     Some(event)

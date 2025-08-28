@@ -42,13 +42,29 @@ export class MouseInput {
       displayString: 'Mouse 5'
     }
   }
+  static get ScrollUp(): MouseInputInfo {
+    return {
+      webButtonVal: -1,
+      enumVal: MouseButton.ScrollUp,
+      displayString: 'Scroll Up'
+    }
+  }
+  static get ScrollDown(): MouseInputInfo {
+    return {
+      webButtonVal: -2,
+      enumVal: MouseButton.ScrollDown,
+      displayString: 'Scroll Down'
+    }
+  }
 
   static readonly all: MouseInputInfo[] = [
     MouseInput.Left,
     MouseInput.Middle,
     MouseInput.Right,
     MouseInput.Mouse4,
-    MouseInput.Mouse5
+    MouseInput.Mouse5,
+    MouseInput.ScrollUp,
+    MouseInput.ScrollDown
   ]
 }
 

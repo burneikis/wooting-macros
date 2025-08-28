@@ -29,6 +29,8 @@ pub enum MouseButton {
     Middle = 0x103,
     Mouse4 = 0x104,
     Mouse5 = 0x105,
+    ScrollUp = 0x106,
+    ScrollDown = 0x107,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Hash, Eq)]

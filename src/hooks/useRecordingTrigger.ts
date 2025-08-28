@@ -89,6 +89,26 @@ export default function useRecordingTrigger(
     [setItems, stopRecording]
   )
 
+  const addMouseWheel = useCallback(
+    (event: WheelEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+
+      if (
+        (event.target as HTMLElement).localName === 'button' ||
+        (event.target as HTMLElement).localName === 'svg' ||
+        (event.target as HTMLElement).localName === 'path'
+      ) {
+        return
+      }
+
+      const enumVal = event.deltaY > 0 ? MouseButton.ScrollDown : MouseButton.ScrollUp
+      setItems([enumVal])
+      stopRecording()
+    },
+    [setItems, stopRecording]
+  )
+
   useEffect(() => {
     if (!recording) {
       return
@@ -96,6 +116,7 @@ export default function useRecordingTrigger(
 
     window.addEventListener('keydown', addKeypress, true)
     window.addEventListener('mousedown', addMousepress, true)
+    window.addEventListener('wheel', addMouseWheel, true)
     invoke<void>('control_grabbing', { frontendBool: false }).catch((e) => {
       error(e)
       toast({
@@ -110,6 +131,7 @@ export default function useRecordingTrigger(
     return () => {
       window.removeEventListener('keydown', addKeypress, true)
       window.removeEventListener('mousedown', addMousepress, true)
+      window.removeEventListener('wheel', addMouseWheel, true)
       invoke<void>('control_grabbing', { frontendBool: true }).catch((e) => {
         error(e)
         toast({
@@ -121,7 +143,7 @@ export default function useRecordingTrigger(
         })
       })
     }
-  }, [recording, addKeypress, addMousepress, toast])
+  }, [recording, addKeypress, addMousepress, addMouseWheel, toast])
 
   return {
     recording,

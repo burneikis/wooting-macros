@@ -25,6 +25,8 @@ impl From<&Button> for MouseButton {
             Button::Middle => MouseButton::Middle,
             Button::Forward => MouseButton::Mouse4,
             Button::Backward => MouseButton::Mouse5,
+            Button::Unknown(6) => MouseButton::ScrollUp,
+            Button::Unknown(7) => MouseButton::ScrollDown,
             Button::Unknown(_) => MouseButton::Left,
         }
     }
@@ -38,6 +40,9 @@ impl From<&MouseButton> for Button {
             MouseButton::Middle => Button::Middle,
             MouseButton::Mouse4 => Button::Forward,
             MouseButton::Mouse5 => Button::Backward,
+            // Scroll wheel events use Unknown button type as they are handled as wheel events
+            MouseButton::ScrollUp => Button::Unknown(6),
+            MouseButton::ScrollDown => Button::Unknown(7),
         }
     }
 }
@@ -50,6 +55,8 @@ impl From<&MouseButton> for u32 {
             MouseButton::Middle => 0x103,
             MouseButton::Mouse4 => 0x104,
             MouseButton::Mouse5 => 0x105,
+            MouseButton::ScrollUp => 0x106,
+            MouseButton::ScrollDown => 0x107,
         }
     }
 }

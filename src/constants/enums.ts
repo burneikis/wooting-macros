@@ -29,7 +29,9 @@ export enum MouseButton {
   Right = 258,
   Middle = 259,
   Mouse4 = 260,
-  Mouse5 = 261
+  Mouse5 = 261,
+  ScrollUp = 262,
+  ScrollDown = 263
 }
 
 export enum SettingsCategory {

@@ -533,7 +533,7 @@ impl MacroBackend {
                         }
 
                         rdev::EventType::ButtonPress(button) => {
-                            debug!("Button pressed: {:?}", button);
+                            info!("Button pressed: {:?}", button);
 
                             let converted_button_to_u32: u32 =
                                 BUTTON_TO_HID.get(&button).unwrap_or(&0x101).to_owned();
@@ -569,41 +569,13 @@ impl MacroBackend {
                             Some(event)
                         }
                         rdev::EventType::MouseMove { .. } => Some(event),
-                        rdev::EventType::Wheel { delta_y, .. } => {
-                            debug!("Mouse wheel: delta_y={:?}", delta_y);
+                        rdev::EventType::Wheel { delta_x, delta_y } => {
+                            info!("Mouse wheel: delta_x={:?}, delta_y={:?}", delta_x, delta_y);
 
-                            // Determine if it's scroll up or down
-                            let scroll_button = if delta_y > 0 {
-                                mouse::MouseButton::ScrollUp
-                            } else {
-                                mouse::MouseButton::ScrollDown
-                            };
-
-                            let converted_button_to_u32: u32 = (&scroll_button).into();
-
-                            let trigger_list = inner_triggers.blocking_read().clone();
-
-                            let check_these_macros =
-                                match trigger_list.get(&converted_button_to_u32) {
-                                    None => {
-                                        vec![]
-                                    }
-                                    Some(data_found) => data_found.to_vec(),
-                                };
-
-                            let channel_clone = schan_execute.clone();
-
-                            let should_grab = check_macro_execution_efficiently(
-                                vec![converted_button_to_u32],
-                                check_these_macros,
-                                channel_clone,
-                            );
-
-                            // Scroll wheel events can be consumed since they don't interfere with basic PC control
-                            match should_grab {
-                                true => None,
-                                false => Some(event),
-                            }
+                            // FIXME: rdev wheel events on Windows don't provide proper delta values
+                            // For now, we'll skip wheel event handling until we find a better solution
+                            info!("Wheel event detected but deltas are 0 - skipping trigger detection");
+                            Some(event)
                         }
                     }
                 } else {

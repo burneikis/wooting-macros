@@ -275,6 +275,21 @@ pub struct Collection {
     pub active: bool,
 }
 
+/// Helper function to parse macro_id back to collection and macro indices
+fn parse_macro_id(macro_id: &str) -> Option<(usize, usize)> {
+    let parts: Vec<&str> = macro_id.split('_').collect();
+    if parts.len() == 2 {
+        if let (Ok(collection_index), Ok(macro_index)) = 
+            (parts[0].parse::<usize>(), parts[1].parse::<usize>()) {
+            Some((collection_index, macro_index))
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
 /// Executes a toggle macro - starts if stopped, stops if running.
 async fn execute_macro_toggle(
     macro_id: String,
@@ -282,6 +297,9 @@ async fn execute_macro_toggle(
     channel: UnboundedSender<rdev::EventType>,
     toggle_states: Arc<RwLock<HashMap<String, bool>>>,
     toggle_handles: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    macro_data: Arc<RwLock<MacroData>>,
+    collection_index: usize,
+    macro_index: usize,
 ) {
     let mut toggle_states_lock = toggle_states.write().await;
     let mut toggle_handles_lock = toggle_handles.write().await;
@@ -305,17 +323,37 @@ async fn execute_macro_toggle(
         let macro_clone = macros.clone();
         let channel_clone = channel.clone();
         let toggle_states_clone = toggle_states.clone();
+        let macro_data_clone = macro_data.clone();
         let macro_id_clone = macro_id.clone();
         
         let handle = task::spawn(async move {
             loop {
-                // Check if we should stop
+                // Check if we should stop (either manually toggled off or macro disabled)
                 let should_stop = {
                     let toggle_states_read = toggle_states_clone.read().await;
-                    !toggle_states_read.get(&macro_id_clone).unwrap_or(&false)
+                    let manually_stopped = !toggle_states_read.get(&macro_id_clone).unwrap_or(&false);
+                    
+                    // Check if macro is still active in the data
+                    let macro_disabled = {
+                        let data_read = macro_data_clone.read().await;
+                        if let Some(collection) = data_read.data.get(collection_index) {
+                            if let Some(macro_data) = collection.macros.get(macro_index) {
+                                !collection.active || !macro_data.active
+                            } else {
+                                true // Macro was deleted
+                            }
+                        } else {
+                            true // Collection was deleted
+                        }
+                    };
+                    
+                    manually_stopped || macro_disabled
                 };
                 
                 if should_stop {
+                    // If we're stopping due to macro being disabled, clean up the toggle state
+                    let mut toggle_states_write = toggle_states_clone.write().await;
+                    toggle_states_write.insert(macro_id_clone.clone(), false);
                     break;
                 }
                 
@@ -340,6 +378,7 @@ async fn execute_macro(
     channel: UnboundedSender<rdev::EventType>,
     toggle_states: Arc<RwLock<HashMap<String, bool>>>,
     toggle_handles: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    macro_data: Arc<RwLock<MacroData>>,
     collection_index: usize,
     macro_index: usize,
 ) {
@@ -357,7 +396,7 @@ async fn execute_macro(
         }
         MacroType::Toggle => {
             let macro_id = format!("{}_{}", collection_index, macro_index);
-            execute_macro_toggle(macro_id, macros, channel, toggle_states, toggle_handles).await;
+            execute_macro_toggle(macro_id, macros, channel, toggle_states, toggle_handles, macro_data, collection_index, macro_index).await;
         }
         MacroType::OnHold => {
             //Postponed
@@ -398,6 +437,7 @@ fn check_macro_execution_efficiently(
     channel_sender: UnboundedSender<rdev::EventType>,
     toggle_states: Arc<RwLock<HashMap<String, bool>>>,
     toggle_handles: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    macro_data: Arc<RwLock<MacroData>>,
 ) -> bool {
     let trigger_overview_print = trigger_overview.clone();
 
@@ -417,6 +457,7 @@ fn check_macro_execution_efficiently(
                             let macro_clone_execute = indexed_macro.macro_data.clone();
                             let toggle_states_clone = toggle_states.clone();
                             let toggle_handles_clone: Arc<RwLock<halfbrown::SizedHashMap<String, task::JoinHandle<()>>>> = toggle_handles.clone();
+                            let macro_data_clone = macro_data.clone();
                             let collection_index = indexed_macro.collection_index;
                             let macro_index = indexed_macro.macro_index;
 
@@ -424,7 +465,7 @@ fn check_macro_execution_efficiently(
                             // plugin::util::lift_keys(data, &channel_clone_execute);
 
                             task::spawn(async move {
-                                execute_macro(macro_clone_execute, channel_clone_execute, toggle_states_clone, toggle_handles_clone, collection_index, macro_index).await;
+                                execute_macro(macro_clone_execute, channel_clone_execute, toggle_states_clone, toggle_handles_clone, macro_data_clone, collection_index, macro_index).await;
                             });
                             output = true;
                         }
@@ -442,6 +483,7 @@ fn check_macro_execution_efficiently(
                             let macro_clone_execute = indexed_macro.macro_data.clone();
                             let toggle_states_clone = toggle_states.clone();
                             let toggle_handles_clone = toggle_handles.clone();
+                            let macro_data_clone = macro_data.clone();
                             let collection_index = indexed_macro.collection_index;
                             let macro_index = indexed_macro.macro_index;
 
@@ -450,7 +492,7 @@ fn check_macro_execution_efficiently(
                                 .unwrap_or_else(|err| error!("Error lifting keys: {}", err));
 
                             task::spawn(async move {
-                                execute_macro(macro_clone_execute, channel_clone_execute, toggle_states_clone, toggle_handles_clone, collection_index, macro_index).await;
+                                execute_macro(macro_clone_execute, channel_clone_execute, toggle_states_clone, toggle_handles_clone, macro_data_clone, collection_index, macro_index).await;
                             });
                             output = true;
                         }
@@ -471,11 +513,12 @@ fn check_macro_execution_efficiently(
                     let macro_clone = indexed_macro.macro_data.clone();
                     let toggle_states_clone = toggle_states.clone();
                     let toggle_handles_clone = toggle_handles.clone();
+                    let macro_data_clone = macro_data.clone();
                     let collection_index = indexed_macro.collection_index;
                     let macro_index = indexed_macro.macro_index;
 
                     task::spawn(async move {
-                        execute_macro(macro_clone, channel_clone, toggle_states_clone, toggle_handles_clone, collection_index, macro_index).await;
+                        execute_macro(macro_clone, channel_clone, toggle_states_clone, toggle_handles_clone, macro_data_clone, collection_index, macro_index).await;
                     });
                     output = true;
                 }
@@ -514,9 +557,46 @@ impl MacroBackend {
     }
     /// Sets the macros from the frontend to the files. This function is here to completely split the frontend off.
     pub async fn set_macros(&self, macros: MacroData) -> Result<()> {
+        // Get currently running toggle macros before updating data
+        let running_toggle_macros = {
+            let toggle_states = self.toggle_states.read().await;
+            toggle_states.iter()
+                .filter(|(_, is_running)| **is_running)
+                .map(|(macro_id, _)| macro_id.clone())
+                .collect::<Vec<String>>()
+        };
+
         macros.write_to_file()?;
         *self.triggers.write().await = macros.extract_triggers()?;
-        *self.data.write().await = macros;
+        *self.data.write().await = macros.clone();
+
+        // Check which running toggle macros should be stopped due to being disabled
+        let mut toggle_states = self.toggle_states.write().await;
+        let mut toggle_handles = self.toggle_handles.write().await;
+        
+        for macro_id in running_toggle_macros {
+            // Parse collection and macro indices from macro_id (format: "collection_macro")
+            if let Some((collection_index, macro_index)) = parse_macro_id(&macro_id) {
+                let should_stop = if let Some(collection) = macros.data.get(collection_index) {
+                    if let Some(macro_data) = collection.macros.get(macro_index) {
+                        !collection.active || !macro_data.active
+                    } else {
+                        true // Macro was deleted
+                    }
+                } else {
+                    true // Collection was deleted
+                };
+                
+                if should_stop {
+                    info!("Stopping toggle macro {} due to being disabled/deleted", macro_id);
+                    toggle_states.insert(macro_id.clone(), false);
+                    if let Some(handle) = toggle_handles.remove(&macro_id) {
+                        handle.abort();
+                    }
+                }
+            }
+        }
+        
         Ok(())
     }
 
@@ -538,6 +618,7 @@ impl MacroBackend {
         let inner_is_listening = self.is_listening.clone();
         let inner_toggle_states = self.toggle_states.clone();
         let inner_toggle_handles = self.toggle_handles.clone();
+        let inner_data = self.data.clone();
 
         // Spawn the channels
         let (schan_execute, rchan_execute) = tokio::sync::mpsc::unbounded_channel();
@@ -608,6 +689,7 @@ impl MacroBackend {
                                         channel_copy_send,
                                         inner_toggle_states.clone(),
                                         inner_toggle_handles.clone(),
+                                        inner_data.clone(),
                                     )
                                 } else {
                                     false
@@ -653,6 +735,7 @@ impl MacroBackend {
                                 channel_clone,
                                 inner_toggle_states.clone(),
                                 inner_toggle_handles.clone(),
+                                inner_data.clone(),
                             );
 
                             // Left mouse button never gets consumed to allow users to control their PC.

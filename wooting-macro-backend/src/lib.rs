@@ -165,8 +165,16 @@ impl Macro {
 /// Collections are groups of macros.
 type Collections = Vec<Collection>;
 
+/// Macro with its location indices for identification
+#[derive(Debug, Clone)]
+pub struct IndexedMacro {
+    pub macro_data: Macro,
+    pub collection_index: usize,
+    pub macro_index: usize,
+}
+
 /// Hashmap to check the first trigger key of each macro.
-type MacroTriggerLookup = HashMap<u32, Vec<Macro>>;
+type MacroTriggerLookup = HashMap<u32, Vec<IndexedMacro>>;
 
 /// State of the application in RAM (RWlock).
 #[derive(Debug)]
@@ -175,6 +183,8 @@ pub struct MacroBackend {
     pub config: Arc<RwLock<ApplicationConfig>>,
     pub triggers: Arc<RwLock<MacroTriggerLookup>>,
     pub is_listening: Arc<AtomicBool>,
+    pub toggle_states: Arc<RwLock<HashMap<String, bool>>>,
+    pub toggle_handles: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
 }
 
 ///MacroData is the main data structure that contains all macro data.
@@ -201,10 +211,15 @@ impl MacroData {
     pub fn extract_triggers(&self) -> Result<MacroTriggerLookup> {
         let mut output_hashmap = MacroTriggerLookup::new();
 
-        for collections in &self.data {
+        for (collection_index, collections) in self.data.iter().enumerate() {
             if collections.active {
-                for macros in &collections.macros {
+                for (macro_index, macros) in collections.macros.iter().enumerate() {
                     if macros.active {
+                        let indexed_macro = IndexedMacro {
+                            macro_data: macros.clone(),
+                            collection_index,
+                            macro_index,
+                        };
                         match &macros.trigger {
                             TriggerEventType::KeyPressEvent { data, .. } => {
                                 //TODO: optimize using references
@@ -224,10 +239,10 @@ impl MacroData {
                                         output_hashmap
                                             .entry(first_data)
                                             .or_default()
-                                            .push(macros.clone())
+                                            .push(indexed_macro.clone())
                                     }
                                     _ => data[..data.len() - 1].iter().for_each(|x| {
-                                        output_hashmap.entry(*x).or_default().push(macros.clone());
+                                        output_hashmap.entry(*x).or_default().push(indexed_macro.clone());
                                     }),
                                 }
                             }
@@ -235,9 +250,9 @@ impl MacroData {
                                 let data: u32 = data.into();
 
                                 match output_hashmap.get_mut(&data) {
-                                    Some(value) => value.push(macros.clone()),
+                                    Some(value) => value.push(indexed_macro.clone()),
                                     None => {
-                                        output_hashmap.insert_nocheck(data, vec![macros.clone()])
+                                        output_hashmap.insert_nocheck(data, vec![indexed_macro.clone()])
                                     }
                                 }
                             }
@@ -260,10 +275,74 @@ pub struct Collection {
     pub active: bool,
 }
 
+/// Executes a toggle macro - starts if stopped, stops if running.
+async fn execute_macro_toggle(
+    macro_id: String,
+    macros: Macro,
+    channel: UnboundedSender<rdev::EventType>,
+    toggle_states: Arc<RwLock<HashMap<String, bool>>>,
+    toggle_handles: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
+) {
+    let mut toggle_states_lock = toggle_states.write().await;
+    let mut toggle_handles_lock = toggle_handles.write().await;
+    
+    let is_running = toggle_states_lock.get(&macro_id).unwrap_or(&false);
+    
+    if *is_running {
+        info!("STOPPING TOGGLE MACRO: {:#?}", macros.name);
+        
+        // Stop the running macro
+        if let Some(handle) = toggle_handles_lock.remove(&macro_id) {
+            handle.abort();
+        }
+        toggle_states_lock.insert(macro_id, false);
+    } else {
+        info!("STARTING TOGGLE MACRO: {:#?}", macros.name);
+        
+        // Start the macro
+        toggle_states_lock.insert(macro_id.clone(), true);
+        
+        let macro_clone = macros.clone();
+        let channel_clone = channel.clone();
+        let toggle_states_clone = toggle_states.clone();
+        let macro_id_clone = macro_id.clone();
+        
+        let handle = task::spawn(async move {
+            loop {
+                // Check if we should stop
+                let should_stop = {
+                    let toggle_states_read = toggle_states_clone.read().await;
+                    !toggle_states_read.get(&macro_id_clone).unwrap_or(&false)
+                };
+                
+                if should_stop {
+                    break;
+                }
+                
+                // Execute the macro sequence once
+                if let Err(error) = macro_clone.execute(channel_clone.clone()).await {
+                    error!("error executing toggle macro: {}", error);
+                    break;
+                }
+                
+                // Add a small delay before repeating
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await; // In future this should be configurable
+            }
+        });
+        
+        toggle_handles_lock.insert(macro_id, handle);
+    }
+}
+
 /// Executes a given macro (according to its type).
-///
-/// ! **UNIMPLEMENTED** - Only Single macro type is implemented for now.
-async fn execute_macro(macros: Macro, channel: UnboundedSender<rdev::EventType>) {
+async fn execute_macro(
+    macros: Macro,
+    channel: UnboundedSender<rdev::EventType>,
+    toggle_states: Arc<RwLock<HashMap<String, bool>>>,
+    toggle_handles: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    collection_index: usize,
+    macro_index: usize,
+) {
     match macros.macro_type {
         MacroType::Single => {
             info!("\nEXECUTING A SINGLE MACRO: {:#?}", macros.name);
@@ -277,8 +356,8 @@ async fn execute_macro(macros: Macro, channel: UnboundedSender<rdev::EventType>)
             });
         }
         MacroType::Toggle => {
-            //Postponed
-            //execute_macro_toggle(&macros).await;
+            let macro_id = format!("{}_{}", collection_index, macro_index);
+            execute_macro_toggle(macro_id, macros, channel, toggle_states, toggle_handles).await;
         }
         MacroType::OnHold => {
             //Postponed
@@ -315,8 +394,10 @@ fn keypress_executor_sender(mut rchan_execute: UnboundedReceiver<rdev::EventType
 /// `channel_sender` - a copy of the channel sender to use later when executing various macros.
 fn check_macro_execution_efficiently(
     pressed_events: Vec<u32>,
-    trigger_overview: Vec<Macro>,
+    trigger_overview: Vec<IndexedMacro>,
     channel_sender: UnboundedSender<rdev::EventType>,
+    toggle_states: Arc<RwLock<HashMap<String, bool>>>,
+    toggle_handles: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
 ) -> bool {
     let trigger_overview_print = trigger_overview.clone();
 
@@ -324,8 +405,8 @@ fn check_macro_execution_efficiently(
     trace!("Got keys: {:?}", pressed_events);
 
     let mut output = false;
-    for macros in &trigger_overview {
-        match &macros.trigger {
+    for indexed_macro in &trigger_overview {
+        match &indexed_macro.macro_data.trigger {
             TriggerEventType::KeyPressEvent { data, .. } => {
                 match data.len() {
                     1 => {
@@ -333,13 +414,17 @@ fn check_macro_execution_efficiently(
                             debug!("MATCHED MACRO singlekey: {:#?}", pressed_events);
 
                             let channel_clone_execute = channel_sender.clone();
-                            let macro_clone_execute = macros.clone();
+                            let macro_clone_execute = indexed_macro.macro_data.clone();
+                            let toggle_states_clone = toggle_states.clone();
+                            let toggle_handles_clone: Arc<RwLock<halfbrown::SizedHashMap<String, task::JoinHandle<()>>>> = toggle_handles.clone();
+                            let collection_index = indexed_macro.collection_index;
+                            let macro_index = indexed_macro.macro_index;
 
                             // We don't need this here as there can't be a single key that's a modifier
                             // plugin::util::lift_keys(data, &channel_clone_execute);
 
                             task::spawn(async move {
-                                execute_macro(macro_clone_execute, channel_clone_execute).await;
+                                execute_macro(macro_clone_execute, channel_clone_execute, toggle_states_clone, toggle_handles_clone, collection_index, macro_index).await;
                             });
                             output = true;
                         }
@@ -354,14 +439,18 @@ fn check_macro_execution_efficiently(
                             debug!("MATCHED MACRO multikey: {:#?}", pressed_events);
 
                             let channel_clone_execute = channel_sender.clone();
-                            let macro_clone_execute = macros.clone();
+                            let macro_clone_execute = indexed_macro.macro_data.clone();
+                            let toggle_states_clone = toggle_states.clone();
+                            let toggle_handles_clone = toggle_handles.clone();
+                            let collection_index = indexed_macro.collection_index;
+                            let macro_index = indexed_macro.macro_index;
 
                             // This releases any trigger keys that have been held to make macros more reliable when used with modifier hotkeys.
                             plugin::util::lift_keys(data, &channel_clone_execute)
                                 .unwrap_or_else(|err| error!("Error lifting keys: {}", err));
 
                             task::spawn(async move {
-                                execute_macro(macro_clone_execute, channel_clone_execute).await;
+                                execute_macro(macro_clone_execute, channel_clone_execute, toggle_states_clone, toggle_handles_clone, collection_index, macro_index).await;
                             });
                             output = true;
                         }
@@ -379,10 +468,14 @@ fn check_macro_execution_efficiently(
 
                 if event_to_check == pressed_events {
                     let channel_clone = channel_sender.clone();
-                    let macro_clone = macros.clone();
+                    let macro_clone = indexed_macro.macro_data.clone();
+                    let toggle_states_clone = toggle_states.clone();
+                    let toggle_handles_clone = toggle_handles.clone();
+                    let collection_index = indexed_macro.collection_index;
+                    let macro_index = indexed_macro.macro_index;
 
                     task::spawn(async move {
-                        execute_macro(macro_clone, channel_clone).await;
+                        execute_macro(macro_clone, channel_clone, toggle_states_clone, toggle_handles_clone, collection_index, macro_index).await;
                     });
                     output = true;
                 }
@@ -443,6 +536,8 @@ impl MacroBackend {
 
         let inner_triggers = self.triggers.clone();
         let inner_is_listening = self.is_listening.clone();
+        let inner_toggle_states = self.toggle_states.clone();
+        let inner_toggle_handles = self.toggle_handles.clone();
 
         // Spawn the channels
         let (schan_execute, rchan_execute) = tokio::sync::mpsc::unbounded_channel();
@@ -511,6 +606,8 @@ impl MacroBackend {
                                         pressed_keys_copy_converted,
                                         check_these_macros,
                                         channel_copy_send,
+                                        inner_toggle_states.clone(),
+                                        inner_toggle_handles.clone(),
                                     )
                                 } else {
                                     false
@@ -554,6 +651,8 @@ impl MacroBackend {
                                 vec![converted_button_to_u32],
                                 check_these_macros,
                                 channel_clone,
+                                inner_toggle_states.clone(),
+                                inner_toggle_handles.clone(),
                             );
 
                             // Left mouse button never gets consumed to allow users to control their PC.
@@ -596,6 +695,8 @@ impl Default for MacroBackend {
             )),
             triggers: Arc::new(RwLock::from(triggers)),
             is_listening: Arc::new(AtomicBool::new(true)),
+            toggle_states: Arc::new(RwLock::new(HashMap::new())),
+            toggle_handles: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }

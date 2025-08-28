@@ -13,7 +13,7 @@ import {
   useColorModeValue,
   VStack
 } from '@chakra-ui/react'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useApplicationContext } from '../../contexts/applicationContext'
 import { useSelectedCollection } from '../../contexts/selectors'
 import { ViewState } from '../../constants/enums'

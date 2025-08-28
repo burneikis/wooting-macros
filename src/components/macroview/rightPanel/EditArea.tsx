@@ -1,5 +1,5 @@
 import { Box, HStack, Text, useColorModeValue, VStack } from '@chakra-ui/react'
-import React, { useMemo } from 'react'
+import { useMemo } from 'react'
 import { useMacroContext } from '../../../contexts/macroContext'
 import { useSelectedElement } from '../../../contexts/selectors'
 import useMainBgColour from '../../../hooks/useMainBgColour'

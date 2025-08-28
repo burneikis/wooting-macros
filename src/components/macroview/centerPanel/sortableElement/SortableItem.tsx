@@ -12,7 +12,7 @@ import {
   useColorModeValue,
   VStack
 } from '@chakra-ui/react'
-import React, { useCallback, useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useMacroContext } from '../../../../contexts/macroContext'
 import { ActionEventType } from '../../../../types'
 import {

@@ -11,7 +11,6 @@ use halfbrown::HashMap;
 use itertools::Itertools;
 use log::*;
 use rayon::prelude::*;
-use rdev::simulate;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::RwLock;
 use tokio::task;
